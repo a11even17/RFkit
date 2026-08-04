@@ -1,0 +1,19 @@
+{
+  "bundle": {
+    "externalBin": [
+      "binaries/RFkit-worker"
+    ],
+    "resources": [
+      "../../RFkit_plot.r"
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

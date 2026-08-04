@@ -13,11 +13,18 @@ The tool takes the following as input: (i) mzML files containing the data for in
 Once the repository is downloaded:
 
 Windows:
-```bash
+```powershell
 cd RFkit
-cd gui/src-tauri
-cargo build --release
+powershell -ExecutionPolicy Bypass -File gui/build-windows.ps1
 ```
+
+The script creates a lightweight per-user setup executable under
+`gui/src-tauri/target/release/bundle/nsis`. It bundles the RFkit processing
+engine, so the installed GUI does not require Rust, R, or any source files.
+The setup program uses the WebView2 runtime already present on current Windows
+systems. If WebView2 is missing, setup downloads and installs Microsoft's small
+bootstrapper at that point instead of making every RFkit download include the
+full runtime. Windows then keeps the shared runtime updated normally.
 
 MacOS:
 ```bash
