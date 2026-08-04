@@ -1,0 +1,16 @@
+{
+  "bundle": {
+    "icon": [
+      "icons/icon.icns"
+    ],
+    "externalBin": [
+      "binaries/RFkit-worker"
+    ],
+    "resources": [
+      "../../RFkit_plot.r"
+    ],
+    "macOS": {
+      "hardenedRuntime": true
+    }
+  }
+}

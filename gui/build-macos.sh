@@ -2,96 +2,247 @@
 
 set -Eeuo pipefail
 
-# resolve repository paths from this script
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 tauri_dir="$script_dir/src-tauri"
 
+build_mode="local"
+build_target="native"
+notary_profile="${RFKIT_NOTARY_PROFILE:-}"
+
+usage() {
+  cat <<'EOF'
+Build the RFkit macOS app and DMG.
+
+Usage:
+  bash gui/build-macos.sh [--local|--release] [--native|--universal]
+                          [--notary-profile NAME]
+
+Options:
+  --local       Ad-hoc sign for testing on this Mac (default).
+  --release     Developer ID sign, notarize, and staple for distribution.
+  --native      Build for this Mac's architecture (default).
+  --universal   Build for both Apple Silicon and Intel Macs.
+  --notary-profile NAME
+                Notarize with credentials stored by notarytool in Keychain.
+  -h, --help    Show this help.
+
+Release builds use a Developer ID Application identity from a configured keychain.
+Notarization accepts a notarytool Keychain profile, APPLE_ID/APPLE_PASSWORD/
+APPLE_TEAM_ID, or APPLE_API_KEY/APPLE_API_ISSUER credentials.
+EOF
+}
+
+while (($#)); do
+  case "$1" in
+    --local) build_mode="local" ;;
+    --release) build_mode="release" ;;
+    --native) build_target="native" ;;
+    --universal) build_target="universal" ;;
+    --notary-profile)
+      if (($# < 2)); then
+        echo "Error: --notary-profile requires a profile name." >&2
+        exit 2
+      fi
+      notary_profile="$2"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Error: unknown option '$1'." >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
 if [[ "$(uname -s)" != "Darwin" ]]; then
-  echo "Error: this script must be run on macOS."
+  echo "Error: this script must be run on macOS." >&2
   exit 1
 fi
 
-if ! xcode-select -p >/dev/null 2>&1; then
-  echo "Error: Xcode Command Line Tools are required."
-  echo "Run: xcode-select --install"
+# Prefer the full Xcode installation without changing the machine-wide selection.
+if [[ -d /Applications/Xcode.app/Contents/Developer ]]; then
+  export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
+fi
+
+if ! xcodebuild -version >/dev/null 2>&1; then
+  echo "Error: a full Xcode installation is required." >&2
+  echo "Set DEVELOPER_DIR to its Contents/Developer directory and try again." >&2
   exit 1
 fi
 
-for command_name in cargo rustc sips iconutil; do
+for command_name in cargo rustc codesign lipo; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
-    echo "Error: required command '$command_name' was not found."
+    echo "Error: required command '$command_name' was not found." >&2
     exit 1
   fi
 done
-
-target_triple="$(rustc --print host-tuple 2>/dev/null || true)"
-if [[ -z "$target_triple" ]]; then
-  target_triple="$(rustc -Vv | awk '/^host:/ { print $2 }')"
-fi
-
-case "$target_triple" in
-  aarch64-apple-darwin|x86_64-apple-darwin) ;;
-  *)
-    echo "Error: unsupported macOS Rust target '$target_triple'."
-    exit 1
-    ;;
-esac
-
-echo "Building RFkit worker for $target_triple..."
-cargo build --release --manifest-path "$repo_root/Cargo.toml"
-
-# tauri expects sidecars to include the target triple
-sidecar_dir="$tauri_dir/binaries"
-sidecar_path="$sidecar_dir/RFkit-worker-$target_triple"
-mkdir -p "$sidecar_dir"
-cp "$repo_root/target/release/RFkit" "$sidecar_path"
-chmod +x "$sidecar_path"
 
 if ! cargo tauri --version >/dev/null 2>&1; then
   echo "Installing Tauri CLI 2..."
   cargo install tauri-cli --version "^2" --locked
 fi
 
-# create the neutral png icon before bundling
-cargo check --manifest-path "$tauri_dir/Cargo.toml"
+host_target="$(rustc -Vv | awk '/^host:/ { print $2 }')"
+case "$host_target" in
+  aarch64-apple-darwin|x86_64-apple-darwin) ;;
+  *)
+    echo "Error: unsupported macOS Rust target '$host_target'." >&2
+    exit 1
+    ;;
+esac
 
-icon_source="$tauri_dir/icons/icon.png"
-icon_output="$tauri_dir/icons/icon.icns"
-temporary_dir="$(mktemp -d)"
-iconset="$temporary_dir/RFkit.iconset"
-trap 'rm -rf "$temporary_dir"' EXIT
-mkdir -p "$iconset"
+sidecar_dir="$tauri_dir/binaries"
+mkdir -p "$sidecar_dir"
 
-make_icon() {
-  local size="$1"
-  local filename="$2"
-  sips -z "$size" "$size" "$icon_source" --out "$iconset/$filename" >/dev/null
-}
+if [[ "$build_target" == "universal" ]]; then
+  for rust_target in aarch64-apple-darwin x86_64-apple-darwin; do
+    if ! rustup target list --installed | grep -Fxq "$rust_target"; then
+      echo "Error: Rust target '$rust_target' is not installed." >&2
+      echo "Run: rustup target add $rust_target" >&2
+      exit 1
+    fi
+    echo "Building RFkit worker for $rust_target..."
+    cargo build --release --target "$rust_target" --manifest-path "$repo_root/Cargo.toml"
+  done
 
-make_icon 16 icon_16x16.png
-make_icon 32 icon_16x16@2x.png
-make_icon 32 icon_32x32.png
-make_icon 64 icon_32x32@2x.png
-make_icon 128 icon_128x128.png
-make_icon 256 icon_128x128@2x.png
-make_icon 256 icon_256x256.png
-make_icon 512 icon_256x256@2x.png
-make_icon 512 icon_512x512.png
-make_icon 1024 icon_512x512@2x.png
-iconutil -c icns "$iconset" -o "$icon_output"
+  tauri_target="universal-apple-darwin"
+  cp \
+    "$repo_root/target/aarch64-apple-darwin/release/RFkit" \
+    "$sidecar_dir/RFkit-worker-aarch64-apple-darwin"
+  cp \
+    "$repo_root/target/x86_64-apple-darwin/release/RFkit" \
+    "$sidecar_dir/RFkit-worker-x86_64-apple-darwin"
+  sidecar_path="$sidecar_dir/RFkit-worker-$tauri_target"
+  lipo -create \
+    "$repo_root/target/aarch64-apple-darwin/release/RFkit" \
+    "$repo_root/target/x86_64-apple-darwin/release/RFkit" \
+    -output "$sidecar_path"
+  bundle_root="$tauri_dir/target/$tauri_target/release/bundle"
+else
+  echo "Building RFkit worker for $host_target..."
+  cargo build --release --manifest-path "$repo_root/Cargo.toml"
 
-# bundle the worker and plot script into the app
-# use ad-hoc signing for local distribution
-bundle_config='{"bundle":{"externalBin":["binaries/RFkit-worker"],"resources":["../../RFkit_plot.r"],"macOS":{"signingIdentity":"-"}}}'
+  tauri_target="$host_target"
+  sidecar_path="$sidecar_dir/RFkit-worker-$tauri_target"
+  cp "$repo_root/target/release/RFkit" "$sidecar_path"
+  bundle_root="$tauri_dir/target/release/bundle"
+fi
+chmod +x "$sidecar_path"
 
-echo "Building RFkit GUI app and DMG..."
+echo "Generating application icons..."
+cargo tauri icon "$script_dir/app-icon.svg" --output "$tauri_dir/icons"
+
+if [[ "$build_mode" == "release" ]]; then
+  signing_identity="${APPLE_SIGNING_IDENTITY:-}"
+  if [[ -z "$signing_identity" ]]; then
+    signing_identity="$(
+      security find-identity -v -p codesigning 2>/dev/null \
+        | sed -n 's/^.*"\(Developer ID Application:.*\)".*$/\1/p' \
+        | head -n 1
+    )"
+  fi
+  if [[ -z "$signing_identity" ]]; then
+    echo "Error: no usable 'Developer ID Application' identity was found." >&2
+    echo "In Xcode, open Settings > Accounts > Manage Certificates and make sure" >&2
+    echo "the certificate and its private key are installed on this Mac." >&2
+    exit 1
+  fi
+  export APPLE_SIGNING_IDENTITY="$signing_identity"
+
+  has_apple_id_credentials=false
+  if [[ -n "${APPLE_ID:-}" && -n "${APPLE_PASSWORD:-}" && -n "${APPLE_TEAM_ID:-}" ]]; then
+    has_apple_id_credentials=true
+  fi
+  has_api_credentials=false
+  if [[ -n "${APPLE_API_KEY:-}" && -n "${APPLE_API_ISSUER:-}" ]]; then
+    has_api_credentials=true
+  fi
+  has_keychain_credentials=false
+  if [[ -n "$notary_profile" ]]; then
+    has_keychain_credentials=true
+  fi
+
+  if [[ "$has_apple_id_credentials" != true \
+    && "$has_api_credentials" != true \
+    && "$has_keychain_credentials" != true ]]; then
+    if [[ ! -t 0 ]]; then
+      echo "Error: notarization credentials are not configured." >&2
+      echo "Set APPLE_ID, APPLE_PASSWORD (an app-specific password), and APPLE_TEAM_ID." >&2
+      exit 1
+    fi
+
+    default_team_id=""
+    if [[ "$signing_identity" =~ \(([A-Z0-9]+)\)$ ]]; then
+      default_team_id="${BASH_REMATCH[1]}"
+    fi
+    read -r -p "Apple Account email: " APPLE_ID
+    read -r -p "Apple Team ID [$default_team_id]: " APPLE_TEAM_ID
+    APPLE_TEAM_ID="${APPLE_TEAM_ID:-$default_team_id}"
+    read -r -s -p "Apple app-specific password: " APPLE_PASSWORD
+    echo
+    export APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+  fi
+
+  if [[ "$has_keychain_credentials" == true ]]; then
+    # Tauri accepts environment credentials directly. Keychain profiles are
+    # submitted after the signed DMG is created, using Apple's notarytool.
+    unset APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_PATH || true
+  fi
+
+  echo "Building, signing, and notarizing RFkit GUI..."
+else
+  export APPLE_SIGNING_IDENTITY="-"
+  unset APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_PATH || true
+  echo "Building an ad-hoc signed RFkit GUI test app and DMG..."
+fi
+
 (
   cd "$tauri_dir"
-  cargo tauri build --bundles app,dmg --config "$bundle_config"
+  # Avoid Finder/AppleScript automation prompts while arranging the DMG.
+  export CI="${CI:-true}"
+  if [[ "$build_target" == "universal" ]]; then
+    cargo tauri build --bundles app,dmg --target "$tauri_target"
+  else
+    cargo tauri build --bundles app,dmg
+  fi
 )
+
+app_path="$bundle_root/macos/RFkit GUI.app"
+dmg_path="$(find "$bundle_root/dmg" -maxdepth 1 -type f -name '*.dmg' -print -quit)"
+
+if [[ ! -d "$app_path" || -z "$dmg_path" ]]; then
+  echo "Error: the expected app or DMG was not produced." >&2
+  exit 1
+fi
+
+echo "Verifying application code signatures..."
+codesign --verify --deep --strict --verbose=2 "$app_path"
+
+if [[ "$build_mode" == "release" ]]; then
+  if [[ -n "$notary_profile" ]]; then
+    echo "Submitting the signed DMG to Apple's notary service..."
+    xcrun notarytool submit "$dmg_path" --keychain-profile "$notary_profile" --wait
+    echo "Stapling and validating the DMG notarization ticket..."
+    xcrun stapler staple "$dmg_path"
+    xcrun stapler validate "$dmg_path"
+    spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg_path"
+  else
+    echo "Verifying Gatekeeper acceptance and notarization ticket..."
+    xcrun stapler validate "$app_path"
+    spctl --assess --type execute --verbose=2 "$app_path"
+  fi
+fi
 
 echo
 echo "Build complete."
-echo "App: $tauri_dir/target/release/bundle/macos/RFkit GUI.app"
-echo "DMG directory: $tauri_dir/target/release/bundle/dmg"
+echo "App: $app_path"
+echo "DMG: $dmg_path"
+if [[ "$build_mode" == "local" ]]; then
+  echo "This local build is for testing only. Use --release for public distribution."
+fi

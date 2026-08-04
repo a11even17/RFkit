@@ -28,6 +28,6 @@
     "active": true,
     "targets": "all",
     "shortDescription": "RapidFire-MS processing with RFkit",
-    "category": "Science"
+    "category": "Medical"
   }
 }
