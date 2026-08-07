@@ -41,8 +41,7 @@ if ($HostTarget -notin @("x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc")) {
     throw "Unsupported Windows Rust target '$HostTarget'."
 }
 
-& cargo tauri --version *> $null
-if ($LASTEXITCODE -ne 0) {
+if (-not (Get-Command "cargo-tauri" -ErrorAction SilentlyContinue)) {
     Write-Host "Installing Tauri CLI 2..."
     Invoke-Checked cargo install tauri-cli --version "^2" --locked
 }

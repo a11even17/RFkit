@@ -127,12 +127,52 @@ svg {
   justify-self: end;
 }
 
+.brand-tools {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
+}
+
 .brand {
   display: inline-flex;
   align-items: center;
   width: fit-content;
   color: var(--ink);
   text-decoration: none;
+}
+
+.gui-scale-control {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  height: 33px;
+  padding: 0 7px 0 9px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 10px;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.gui-scale-control:hover,
+.gui-scale-control:focus-within {
+  color: var(--blue);
+  border-color: var(--line-strong);
+}
+
+.gui-scale-control select {
+  width: 58px;
+  padding: 2px 0;
+  color: var(--ink);
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font-size: 11px;
+  font-weight: 750;
+  cursor: pointer;
 }
 
 .brand-mark {
@@ -1369,6 +1409,81 @@ footer a:hover {
   }
 }
 
+html[data-gui-layout="compact"] .app-header,
+html[data-gui-layout="small"] .app-header {
+  grid-template-columns: 1fr auto;
+  padding: 0 18px;
+}
+
+html[data-gui-layout="compact"] .primary-nav,
+html[data-gui-layout="small"] .primary-nav {
+  grid-column: 1 / -1;
+  justify-self: start;
+  margin-bottom: 10px;
+}
+
+html[data-gui-layout="compact"] .header-actions,
+html[data-gui-layout="small"] .header-actions {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+html[data-gui-layout="compact"] :is(.summary-grid, .outputs-grid),
+html[data-gui-layout="small"] :is(.summary-grid, .outputs-grid) {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+html[data-gui-layout="compact"] :is(.run-panel, .project-panel, .visualizer-selection),
+html[data-gui-layout="small"] :is(.run-panel, .project-panel, .visualizer-selection) {
+  grid-template-columns: 1fr;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+html[data-gui-layout="compact"] .visualizer-controls,
+html[data-gui-layout="small"] .visualizer-controls,
+html[data-gui-layout="compact"] .visualizer-selection,
+html[data-gui-layout="small"] .visualizer-selection {
+  grid-template-columns: 1fr;
+}
+
+html[data-gui-layout="compact"] :is(.transition-field, .visualizer-sizing, .backups-field),
+html[data-gui-layout="small"] :is(.transition-field, .visualizer-sizing, .backups-field) {
+  grid-column: 1;
+}
+
+html[data-gui-layout="compact"] :is(.run-button, .project-panel .secondary-button),
+html[data-gui-layout="small"] :is(.run-button, .project-panel .secondary-button) {
+  width: 100%;
+}
+
+html[data-gui-layout="small"] main,
+html[data-gui-layout="small"] footer {
+  width: min(100% - 28px, 620px);
+}
+
+html[data-gui-layout="small"] :is(.summary-grid, .outputs-grid) {
+  grid-template-columns: 1fr;
+}
+
+html[data-gui-layout="small"] .sling-link {
+  width: 94px;
+  height: 38px;
+}
+
+html[data-gui-layout="small"] .brand small,
+html[data-gui-layout="small"] .gui-scale-control > span {
+  display: none;
+}
+
+html[data-gui-layout="small"] .brand-tools {
+  gap: 8px;
+}
+
+html[data-gui-layout="small"] .gui-scale-control {
+  padding-left: 7px;
+}
+
 @media (max-width: 820px) {
   .app-header {
     grid-template-columns: 1fr auto;
@@ -1453,6 +1568,19 @@ footer a:hover {
   .sling-link {
     width: 94px;
     height: 38px;
+  }
+
+  .brand small,
+  .gui-scale-control > span {
+    display: none;
+  }
+
+  .brand-tools {
+    gap: 8px;
+  }
+
+  .gui-scale-control {
+    padding-left: 7px;
   }
 
   footer {

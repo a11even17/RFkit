@@ -56,6 +56,7 @@ const elements = {
   visualizerStatus: document.querySelector("#visualizer-status"),
   visualizerPlots: document.querySelector("#visualizer-plots"),
   themeToggle: document.querySelector("#theme-toggle"),
+  guiScale: document.querySelector("#gui-scale"),
   clearActivity: document.querySelector("#clear-activity"),
   activityLog: document.querySelector("#activity-log"),
   toastRegion: document.querySelector("#toast-region"),
@@ -2872,6 +2873,32 @@ function redrawVisualizerCharts() {
   renderVisualizerCharts(visualizer.data);
 }
 
+const guiScales = new Set([100, 125, 150, 175, 200]);
+
+// uses the scaled viewport width for the existing responsive layouts
+function updateGuiScaleLayout(scale) {
+  const effectiveWidth = window.innerWidth / (scale / 100);
+  document.documentElement.dataset.guiLayout =
+    effectiveWidth <= 520 ? "small" : effectiveWidth <= 820 ? "compact" : "full";
+}
+
+// scales the complete interface and remembers the accessibility preference
+function applyGuiScale(value, persist = true) {
+  const requestedScale = Number(value);
+  const scale = guiScales.has(requestedScale) ? requestedScale : 100;
+  document.documentElement.style.zoom = String(scale / 100);
+  updateGuiScaleLayout(scale);
+  elements.guiScale.value = String(scale);
+  if (persist) {
+    try {
+      localStorage.setItem("rfkit-gui-scale", String(scale));
+    } catch {
+      // the selected scale still applies for this session
+    }
+  }
+  window.requestAnimationFrame(redrawVisualizerCharts);
+}
+
 // keeps the theme button label accurate
 function updateThemeToggle() {
   const isDark = document.documentElement.dataset.theme === "dark";
@@ -2930,6 +2957,9 @@ async function registerDesktopEvents() {
 
 // wires the gui once the page is ready
 async function bootstrap() {
+  const initialScale =
+    Math.round((Number.parseFloat(document.documentElement.style.zoom) || 1) * 100);
+  applyGuiScale(initialScale, false);
   for (const button of elements.chooseButtons) {
     button.addEventListener("click", chooseProject);
   }
@@ -3024,6 +3054,12 @@ async function bootstrap() {
     elements.visualizerSelectorExpand.title = label;
   });
   elements.themeToggle.addEventListener("click", toggleTheme);
+  elements.guiScale.addEventListener("change", () =>
+    applyGuiScale(elements.guiScale.value),
+  );
+  window.addEventListener("resize", () =>
+    updateGuiScaleLayout(Number(elements.guiScale.value) || 100),
+  );
   elements.clearActivity.addEventListener("click", () => {
     elements.activityLog.innerHTML = '<p class="empty-log">Activity cleared.</p>';
   });
