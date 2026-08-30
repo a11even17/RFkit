@@ -24,7 +24,6 @@ const elements = {
     document.querySelector("#modal-choose-project"),
   ],
   runButton: document.querySelector("#run-all"),
-  goVisualizerButton: document.querySelector("#go-visualizer"),
   editDataButton: document.querySelector("#edit-data-tab"),
   runTab: document.querySelector("#run-tab"),
   visualizerTab: document.querySelector("#visualizer-tab"),
@@ -2879,7 +2878,7 @@ const guiScales = new Set([100, 125, 150, 175, 200]);
 function updateGuiScaleLayout(scale) {
   const effectiveWidth = window.innerWidth / (scale / 100);
   document.documentElement.dataset.guiLayout =
-    effectiveWidth <= 520 ? "small" : effectiveWidth <= 820 ? "compact" : "full";
+    effectiveWidth <= 640 ? "small" : effectiveWidth <= 820 ? "compact" : "full";
 }
 
 // scales the complete interface and remembers the accessibility preference
@@ -2964,7 +2963,6 @@ async function bootstrap() {
     button.addEventListener("click", chooseProject);
   }
   elements.runButton.addEventListener("click", runAll);
-  elements.goVisualizerButton.addEventListener("click", showVisualizerView);
   elements.editDataButton.addEventListener("click", openDataEditor);
   elements.dataEditorClose.addEventListener("click", closeDataEditor);
   elements.dataEditorSave.addEventListener("click", saveDataEditorFile);

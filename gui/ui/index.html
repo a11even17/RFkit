@@ -18,20 +18,21 @@
         document.documentElement.style.zoom = String(initialScale / 100);
         const effectiveWidth = window.innerWidth / (initialScale / 100);
         document.documentElement.dataset.guiLayout =
-          effectiveWidth <= 520 ? "small" : effectiveWidth <= 820 ? "compact" : "full";
+          effectiveWidth <= 640 ? "small" : effectiveWidth <= 820 ? "compact" : "full";
       } catch {
         document.documentElement.dataset.theme = "light";
         document.documentElement.style.zoom = "1";
         document.documentElement.dataset.guiLayout = "full";
       }
     </script>
-    <link rel="stylesheet" href="styles.css" />
-    <script src="app.js" defer></script>
+    <link rel="stylesheet" href="styles.css?v=1.1.1-dark-select" />
+    <script src="app.js?v=1.1.1" defer></script>
   </head>
   <body>
     <div class="app-shell">
       <header class="app-header">
         <div class="brand-tools">
+          <span class="status-dot" aria-label="application ready"></span>
           <a class="brand" href="#" aria-label="RFkit home">
             <span class="brand-mark" aria-hidden="true">
               <svg viewBox="0 0 24 24">
@@ -43,7 +44,7 @@
             </span>
             <span>
               <strong>RFkit</strong>
-              <small>RapidFire-MS GUI</small>
+              <small>RapidFire-MS <span class="brand-gui">GUI</span></small>
             </span>
           </a>
           <label class="gui-scale-control" title="change the size of the entire interface">
@@ -65,12 +66,17 @@
           <button class="nav-item" id="visualizer-tab" type="button">
             Visualizer
           </button>
-          <button class="nav-item" id="edit-data-tab" type="button">
-            Edit data
-          </button>
         </nav>
 
         <div class="header-actions">
+          <button
+            class="header-text-button"
+            id="edit-data-tab"
+            type="button"
+            title="edit project input files"
+          >
+            Edit data
+          </button>
           <a
             class="sling-link external-sling-link"
             href="https://sling.sg/"
@@ -103,6 +109,12 @@
 
       <main id="run-view" class="run-view">
         <section class="project-panel" aria-labelledby="project-title">
+          <div class="project-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M3 6.5h6l2 2h10v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+              <path d="M3 9h18" />
+            </svg>
+          </div>
           <div class="project-copy">
             <span class="eyebrow">dataset</span>
             <h1 id="project-title">Choose an RFkit project folder</h1>
@@ -119,20 +131,40 @@
 
         <section class="summary-grid" aria-label="project summary">
           <article class="fact">
-            <span>mzML files</span>
-            <strong id="mzml-count">-</strong>
+            <span class="fact-icon blue" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M6 3h12v18H6zM9 7h6M9 11h6M9 15h4" /></svg>
+            </span>
+            <div>
+              <span>mzML files</span>
+              <strong id="mzml-count">-</strong>
+            </div>
           </article>
           <article class="fact">
-            <span>transitions</span>
-            <strong id="transition-count">-</strong>
+            <span class="fact-icon orange" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5" /></svg>
+            </span>
+            <div>
+              <span>transitions</span>
+              <strong id="transition-count">-</strong>
+            </div>
           </article>
           <article class="fact">
-            <span>transition list</span>
-            <strong id="transition-file">-</strong>
+            <span class="fact-icon green" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M4 19V5M4 19h16M7 15l3-4 3 2 4-6" /></svg>
+            </span>
+            <div>
+              <span>transition list</span>
+              <strong id="transition-file">-</strong>
+            </div>
           </article>
           <article class="fact">
-            <span>engine</span>
-            <strong id="worker-name">-</strong>
+            <span class="fact-icon violet" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M8 9h8M8 13h8M8 17h5M5 3h14v18H5z" /></svg>
+            </span>
+            <div>
+              <span>engine</span>
+              <strong id="worker-name">-</strong>
+            </div>
           </article>
         </section>
 
@@ -148,6 +180,12 @@
         </section>
 
         <section class="run-panel" aria-labelledby="run-title">
+          <span class="run-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M4 19V5M4 19h16" />
+              <path d="m6 16 3-4 3 2 4-7 3 4" />
+            </svg>
+          </span>
           <div>
             <span class="eyebrow">one step</span>
             <h2 id="run-title">Process dataset</h2>
@@ -161,28 +199,23 @@
 
         <section class="outputs-grid" aria-label="outputs">
           <article class="output" id="output-acq">
-            <span>acq_time.csv</span>
-            <strong>waiting</strong>
+            <span class="output-icon blue" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M12 3v9l5 3M4 12a8 8 0 1 0 8-8" /></svg>
+            </span>
+            <div><span>acq_time.csv</span><strong>waiting</strong></div>
           </article>
           <article class="output" id="output-results">
-            <span>results csv</span>
-            <strong>waiting</strong>
+            <span class="output-icon green" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M6 3h12v18H6zM9 8h6M9 12h6M9 16h4" /></svg>
+            </span>
+            <div><span>results csv</span><strong>waiting</strong></div>
           </article>
           <article class="output" id="output-misc">
-            <span>misc plot data</span>
-            <strong>waiting</strong>
+            <span class="output-icon violet" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M4 19V5M4 19h16M7 15l3-5 3 3 4-7" /></svg>
+            </span>
+            <div><span>misc plot data</span><strong>waiting</strong></div>
           </article>
-        </section>
-
-        <section class="run-shortcuts" aria-label="next step">
-          <button class="secondary-button go-visualizer-button" id="go-visualizer" type="button">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M4 19V5" />
-              <path d="M4 19h16" />
-              <path d="m7 15 3-4 3 2 4-6" />
-            </svg>
-            <span>Go to visualizer</span>
-          </button>
         </section>
 
         <section class="activity-panel" aria-labelledby="activity-title">
