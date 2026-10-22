@@ -138,21 +138,12 @@ svg {
   justify-self: end;
 }
 
-.brand-tools {
+.brand-cluster {
   display: flex;
   gap: 12px;
   align-items: center;
   min-width: 0;
   width: fit-content;
-}
-
-.status-dot {
-  flex: 0 0 auto;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--green);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 14%, transparent);
 }
 
 .brand {
@@ -214,9 +205,11 @@ html[data-theme="dark"] .gui-scale-control select option {
   place-items: center;
 }
 
-.brand-mark svg {
-  width: 25px;
-  height: 25px;
+.brand-mark img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 
 .brand strong,
@@ -387,21 +380,6 @@ main {
   );
 }
 
-.project-icon {
-  display: grid;
-  width: 50px;
-  height: 50px;
-  color: var(--blue);
-  border-radius: 13px;
-  background: var(--blue-soft);
-  place-items: center;
-}
-
-.project-icon svg {
-  width: 24px;
-  height: 24px;
-}
-
 .eyebrow {
   display: block;
   margin-bottom: 5px;
@@ -512,50 +490,8 @@ main {
   min-width: 0;
 }
 
-.fact-icon,
-.output-icon,
-.run-icon {
-  display: grid;
-  flex: 0 0 auto;
-  width: 38px;
-  height: 38px;
-  border-radius: 11px;
-  place-items: center;
-}
-
-.fact-icon svg,
-.output-icon svg,
-.run-icon svg {
-  width: 19px;
-  height: 19px;
-}
-
-.fact-icon.blue,
-.output-icon.blue,
-.run-icon {
-  color: var(--blue);
-  background: var(--blue-soft);
-}
-
-.fact-icon.orange {
-  color: var(--amber);
-  background: var(--amber-soft);
-}
-
-.fact-icon.green,
-.output-icon.green {
-  color: var(--green);
-  background: var(--green-soft);
-}
-
-.fact-icon.violet,
-.output-icon.violet {
-  color: var(--violet);
-  background: var(--violet-soft);
-}
-
-.fact span:not(.fact-icon),
-.output span:not(.output-icon) {
+.fact span,
+.output span {
   color: var(--muted);
   font-size: 10px;
   font-weight: 800;
@@ -694,13 +630,6 @@ main {
   font-size: 12px;
 }
 
-.activity-pulse {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--green);
-}
-
 .activity-header button {
   padding: 4px 7px;
   color: var(--muted);
@@ -771,12 +700,6 @@ main {
   display: none;
 }
 
-.visualizer-toolbar.selector-collapsed .visualizer-heading-row {
-  position: static;
-  grid-column: 2;
-  grid-row: 1;
-}
-
 .visualizer-toolbar.selector-collapsed .visualizer-selection {
   grid-column: 1;
   grid-row: 1;
@@ -800,13 +723,6 @@ main {
 
 .visualizer-toolbar.selector-collapsed .visualizer-selector-expand svg {
   transform: rotate(180deg);
-}
-
-.visualizer-heading-row {
-  display: flex;
-  gap: 12px;
-  align-items: start;
-  justify-content: space-between;
 }
 
 .visualizer-selector-expand {
@@ -1542,203 +1458,6 @@ footer a:hover {
 
 .brand-gui {
   color: var(--blue);
-}
-
-html[data-gui-layout="compact"] .app-header,
-html[data-gui-layout="small"] .app-header {
-  grid-template-columns: 1fr auto;
-  padding: 0 18px;
-}
-
-html[data-gui-layout="compact"] .primary-nav,
-html[data-gui-layout="small"] .primary-nav {
-  grid-column: 1 / -1;
-  justify-self: start;
-  margin-bottom: 10px;
-}
-
-html[data-gui-layout="compact"] .header-actions,
-html[data-gui-layout="small"] .header-actions {
-  grid-column: 2;
-  grid-row: 1;
-}
-
-html[data-gui-layout="compact"] :is(.summary-grid, .outputs-grid),
-html[data-gui-layout="small"] :is(.summary-grid, .outputs-grid) {
-  grid-template-columns: repeat(2, 1fr);
-}
-
-html[data-gui-layout="compact"] :is(.run-panel, .project-panel) {
-  grid-template-columns: auto minmax(0, 1fr);
-}
-
-html[data-gui-layout="compact"] :is(.run-button, .project-panel .secondary-button) {
-  grid-column: 1 / -1;
-}
-
-html[data-gui-layout="compact"] .visualizer-selection,
-html[data-gui-layout="small"] :is(.run-panel, .project-panel, .visualizer-selection) {
-  grid-template-columns: 1fr;
-  flex-direction: column;
-  align-items: stretch;
-}
-
-html[data-gui-layout="small"] :is(.project-icon, .run-icon) {
-  display: none;
-}
-
-html[data-gui-layout="compact"] .visualizer-controls,
-html[data-gui-layout="small"] .visualizer-controls,
-html[data-gui-layout="compact"] .visualizer-selection,
-html[data-gui-layout="small"] .visualizer-selection {
-  grid-template-columns: 1fr;
-}
-
-html[data-gui-layout="compact"] :is(.transition-field, .visualizer-sizing, .backups-field),
-html[data-gui-layout="small"] :is(.transition-field, .visualizer-sizing, .backups-field) {
-  grid-column: 1;
-}
-
-html[data-gui-layout="compact"] :is(.run-button, .project-panel .secondary-button),
-html[data-gui-layout="small"] :is(.run-button, .project-panel .secondary-button) {
-  width: 100%;
-}
-
-html[data-gui-layout="small"] main,
-html[data-gui-layout="small"] footer {
-  width: min(100% - 28px, 620px);
-}
-
-html[data-gui-layout="small"] :is(.summary-grid, .outputs-grid) {
-  grid-template-columns: 1fr;
-}
-
-html[data-gui-layout="small"] .sling-link {
-  width: 94px;
-  height: 38px;
-}
-
-html[data-gui-layout="small"] .header-actions .sling-link {
-  display: none;
-}
-
-html[data-gui-layout="small"] .brand small,
-html[data-gui-layout="small"] .gui-scale-control > span {
-  display: none;
-}
-
-html[data-gui-layout="small"] .brand-tools {
-  gap: 8px;
-}
-
-html[data-gui-layout="small"] .gui-scale-control {
-  padding-left: 7px;
-}
-
-@media (max-width: 820px) {
-  .app-header {
-    grid-template-columns: 1fr auto;
-    padding: 0 18px;
-  }
-
-  .primary-nav {
-    grid-column: 1 / -1;
-    justify-self: start;
-    margin-bottom: 10px;
-  }
-
-  .header-actions {
-    grid-column: 2;
-    grid-row: 1;
-  }
-
-  .summary-grid,
-  .outputs-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-
-  .run-panel,
-  .project-panel,
-  .visualizer-selection {
-    grid-template-columns: 1fr;
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .visualizer-controls {
-    grid-template-columns: 1fr;
-  }
-
-  .visualizer-selection {
-    grid-template-columns: 1fr;
-  }
-
-  .transition-field,
-  .visualizer-sizing,
-  .backups-field {
-    grid-column: 1;
-  }
-
-  .run-button,
-  .project-panel .secondary-button {
-    width: 100%;
-  }
-
-  .data-editor-modal {
-    grid-template-columns: 1fr;
-    height: 100%;
-  }
-
-  .data-editor-sidebar {
-    max-height: 190px;
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .data-editor-toolbar {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .data-editor-actions {
-    justify-content: flex-start;
-  }
-}
-
-@media (max-width: 520px) {
-  main,
-  footer {
-    width: min(100% - 28px, 620px);
-  }
-
-  .summary-grid,
-  .outputs-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .sling-link {
-    width: 94px;
-    height: 38px;
-  }
-
-  .brand small,
-  .gui-scale-control > span {
-    display: none;
-  }
-
-  .brand-tools {
-    gap: 8px;
-  }
-
-  .gui-scale-control {
-    padding-left: 7px;
-  }
-
-  footer {
-    gap: 8px;
-    align-items: flex-start;
-    flex-direction: column;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {

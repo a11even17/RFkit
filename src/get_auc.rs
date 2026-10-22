@@ -1,12 +1,11 @@
 mod parse;
 use std::error::Error;
-use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::Write;
 use std::path::Path;
 const MISCDIR: &str = "misc";
 pub fn calc_auc(param_t: &crate::common::Param) -> Result<(), Box<dyn Error>> {
-    std::fs::create_dir(MISCDIR).ok();
-    let t_list = read_assay(&param_t.t_list).unwrap();
+    std::fs::create_dir_all(MISCDIR)?;
+    let t_list = read_assay(&param_t.t_list)?;
     let mzml_fs_acq_time = read_acq_time()?;
     let dat_l: Vec<_> = mzml_fs_acq_time
         .iter()
@@ -36,7 +35,7 @@ fn write_long(
             }
         }
     }
-    Ok(())
+    wtr.flush()
 }
 
 struct Acq {
@@ -51,16 +50,18 @@ fn parse_auc(
     let &crate::common::Param { mz_tol, .. } = param_t;
     println!("{sam_id:?}");
 
-    let file_path = Path::new(MISCDIR).join(format!("plot_{sam_id}.bin"));
-    let mut bufp = BufWriter::new(File::create(file_path)?);
-
     let file_path = std::path::Path::new("mzml_dir").join(sam_id);
-    let (_ts, qqeic) = parse::mzml(&file_path);
+    let qqeic = parse::mzml(&file_path)?;
+    // Validate and generate the complete sample before replacing an existing plot.
+    let mut bufp = Vec::new();
     bufp.write_all(&u8::try_from(t_list.len())?.to_le_bytes())?;
-    t_list
+    let rows = t_list
         .iter()
         .map(|trans| print_plot(mz_tol, &mut bufp, trans, &qqeic, well))
-        .collect::<Result<_, _>>()
+        .collect::<Result<_, _>>()?;
+    let file_path = Path::new(MISCDIR).join(format!("plot_{sam_id}.bin"));
+    std::fs::write(file_path, bufp)?;
+    Ok(rows)
 }
 fn find_closest(vec: &[(f32, f32)], pt: f32, pos: usize) -> usize {
     if pos == 0 {
@@ -73,7 +74,7 @@ fn find_closest(vec: &[(f32, f32)], pt: f32, pos: usize) -> usize {
 }
 fn print_plot(
     mz_tol: f32,
-    bufp: &mut BufWriter<File>,
+    bufp: &mut impl Write,
     trans: &QQ,
     qqeic: &[parse::Q1Q3RtI],
     acq_time: &[(String, f32, f32)],
@@ -87,7 +88,8 @@ fn print_plot(
         .map(|x| (x, (x.q3 - trans.q3).abs()))
         .filter(|x| x.1 < mz_tol)
         .min_by(|x, y| x.1.partial_cmp(&y.1).unwrap())
-        .map_or_else(|| panic!("{} not found", trans.name), |x| &x.0.rt_i_l);
+        .map(|x| &x.0.rt_i_l)
+        .ok_or_else(|| format!("Transition {} not found in mzML", trans.name))?;
     bufp.write_all(trans.name.as_bytes())?;
     bufp.write_all(b"\0")?;
     bufp.write_all(&u16::try_from(rt_i_l.len())?.to_le_bytes())?;
@@ -127,30 +129,45 @@ struct RowDat {
     rt: f32,
 }
 
-fn read_acq_time() -> std::io::Result<Vec<Acq>> {
+fn read_acq_time() -> Result<Vec<Acq>, Box<dyn Error>> {
     let rdr = csv::ReaderBuilder::new()
         .has_headers(false)
         .trim(csv::Trim::All)
         .from_path("acq_time.csv")?;
-    let mut acq_time = Vec::new();
-    let mut ptr = &mut Acq {
-        sam_id: String::new(),
-        well: Vec::new(),
-    };
-    for row in rdr.into_records().map(std::result::Result::unwrap) {
+    let mut acq_time: Vec<Acq> = Vec::new();
+    for (index, row) in rdr.into_records().enumerate() {
+        let row = row?;
+        let line = index + 1;
+        if row.len() < 3 || row[0].is_empty() {
+            return Err(
+                format!("acq_time.csv row {line} requires a label and three columns").into(),
+            );
+        }
         if row[1].is_empty() && row[2].is_empty() {
             acq_time.push(Acq {
                 sam_id: row[0].to_string(),
                 well: Vec::with_capacity(99),
             });
-            ptr = acq_time.last_mut().unwrap();
         } else {
-            ptr.well.push((
-                row[0].to_string(),
-                row[1].parse().unwrap(),
-                row[2].parse().unwrap(),
-            ));
+            let sample = acq_time.last_mut().ok_or_else(|| {
+                format!("acq_time.csv row {line} has a well before any sample header")
+            })?;
+            let beg: f32 = row[1]
+                .parse()
+                .map_err(|err| format!("Invalid start time in acq_time.csv row {line}: {err}"))?;
+            let end: f32 = row[2]
+                .parse()
+                .map_err(|err| format!("Invalid end time in acq_time.csv row {line}: {err}"))?;
+            if !beg.is_finite() || !end.is_finite() || end < beg {
+                return Err(
+                    format!("Invalid acquisition interval in acq_time.csv row {line}").into(),
+                );
+            }
+            sample.well.push((row[0].to_string(), beg, end));
         }
+    }
+    if acq_time.is_empty() {
+        return Err("acq_time.csv contains no samples".into());
     }
     Ok(acq_time)
 }
@@ -159,20 +176,36 @@ struct QQ {
     q1: f32,
     q3: f32,
 }
-fn read_assay(assay_f: &Path) -> std::io::Result<Vec<QQ>> {
+fn read_assay(assay_f: &Path) -> Result<Vec<QQ>, Box<dyn Error>> {
     let mut rdr = csv::ReaderBuilder::new()
         .comment(Some(b'#'))
         .has_headers(true)
         .trim(csv::Trim::All)
         .from_path(assay_f)?;
-    let t_list: Vec<_> = rdr
-        .records()
-        .map(std::result::Result::unwrap)
-        .map(|line| QQ {
-            name: line[0].to_string(),
-            q1: line[1].parse().unwrap(),
-            q3: line[2].parse().unwrap(),
-        })
-        .collect();
+    let mut t_list = Vec::new();
+    for (index, record) in rdr.records().enumerate() {
+        let record = record?;
+        let line = index + 2;
+        if record.len() < 3 || record[0].is_empty() {
+            return Err(format!("Transition row {line} requires a name, Q1, and Q3").into());
+        }
+        let q1: f32 = record[1]
+            .parse()
+            .map_err(|err| format!("Invalid Q1 in transition row {line}: {err}"))?;
+        let q3: f32 = record[2]
+            .parse()
+            .map_err(|err| format!("Invalid Q3 in transition row {line}: {err}"))?;
+        if !q1.is_finite() || !q3.is_finite() {
+            return Err(format!("Non-finite mass in transition row {line}").into());
+        }
+        t_list.push(QQ {
+            name: record[0].to_string(),
+            q1,
+            q3,
+        });
+    }
+    if t_list.is_empty() {
+        return Err("Transition list contains no transitions".into());
+    }
     Ok(t_list)
 }

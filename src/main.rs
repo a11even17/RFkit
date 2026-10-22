@@ -13,7 +13,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     let param_t = common::read_param()?;
     match args.next().as_deref() {
-        Some("1") => acq_time::read(&param_t),
+        Some("1") => acq_time::read(&param_t)?,
         Some("2") => {
             get_auc::calc_auc(&param_t)?;
             gen_plots()?;
@@ -24,16 +24,20 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!();
             println!("---------- RFkit ----------");
             loop {
-                if let Err(x) = handle_input() {
-                    use yansi::Paint;
-                    println!("{}", format!("Error: {x}").white().on_red().bright());
+                match handle_input() {
+                    Ok(false) => break,
+                    Ok(true) => (),
+                    Err(x) => {
+                        use yansi::Paint;
+                        println!("{}", format!("Error: {x}").white().on_red().bright());
+                    }
                 }
             }
         }
     }
     Ok(())
 }
-fn handle_input() -> Result<(), Box<dyn Error>> {
+fn handle_input() -> Result<bool, Box<dyn Error>> {
     println!(
         r#"
 Enter number.
@@ -41,19 +45,21 @@ Enter number.
 2: Calculate areas, generate chromatograms in PDFs"#
     );
     let mut guess = String::new();
-    std::io::stdin().read_line(&mut guess)?;
+    if std::io::stdin().read_line(&mut guess)? == 0 {
+        return Ok(false);
+    }
     let param_t = common::read_param()?;
     let start = std::time::Instant::now();
     match guess.trim() {
-        "1" => acq_time::read(&param_t),
+        "1" => acq_time::read(&param_t)?,
         "2" => {
             get_auc::calc_auc(&param_t)?;
             gen_plots()?;
         }
-        _ => return Ok(()),
+        _ => return Ok(true),
     }
     println!("----------Completed, {:.1?}----------", start.elapsed());
-    Ok(())
+    Ok(true)
 }
 fn gen_plots() -> Result<(), Box<dyn Error>> {
     use std::process::{Command, Stdio};

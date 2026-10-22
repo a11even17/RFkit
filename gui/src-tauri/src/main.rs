@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,6 +11,23 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 struct RunState(AtomicBool);
+
+struct RunGuard<'a>(&'a AtomicBool);
+
+impl RunState {
+    fn start(&self) -> Result<RunGuard<'_>, String> {
+        self.0
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| "RFkit is already running".to_string())?;
+        Ok(RunGuard(&self.0))
+    }
+}
+
+impl Drop for RunGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
 
 const BOUNDS_BACKUP_DIR: &str = "batch_rftime_backups";
 const ORIGINAL_BOUNDS_BACKUP: &str = "batch_rftime_original.rftime";
@@ -33,7 +50,6 @@ struct ProjectOutputs {
     acq_time: bool,
     results_csv: bool,
     misc_data: bool,
-    pdf_plots: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -359,6 +375,14 @@ fn safe_backup_name(name: &str) -> Result<&str, String> {
     Ok(name)
 }
 
+fn writable_bounds_backup_name(name: &str) -> Result<&str, String> {
+    let name = safe_backup_name(name)?;
+    if name.eq_ignore_ascii_case(ORIGINAL_BOUNDS_BACKUP) {
+        return Err("Original batch.rftime cannot be overwritten".to_string());
+    }
+    Ok(name)
+}
+
 // keeps renamed backup labels small and printable
 fn safe_backup_label(label: &str) -> Result<String, String> {
     let label = label.trim();
@@ -411,7 +435,7 @@ fn ensure_original_bounds(project: &Path) -> Result<(), String> {
 
 // copies current batch.rftime into a named backup
 fn backup_bounds(project: &Path, name: &str) -> Result<Option<String>, String> {
-    let name = safe_backup_name(name)?;
+    let name = writable_bounds_backup_name(name)?;
     let source = project.join("batch.rftime");
     if !source.is_file() {
         return Ok(None);
@@ -422,13 +446,8 @@ fn backup_bounds(project: &Path, name: &str) -> Result<Option<String>, String> {
     Ok(Some(name.to_string()))
 }
 
-// reads the retention-time offset from param.txt
-fn read_offset(project: &Path) -> Result<f32, String> {
-    let param = fs::read_to_string(project.join("param.txt")).map_err(|error| error.to_string())?;
-    let value = param
-        .parse::<toml::Table>()
-        .map_err(|error| error.to_string())?;
-    value
+fn parameter_offset(parameters: &toml::Table) -> Result<f32, String> {
+    let offset = parameters
         .get("offset")
         .and_then(|value| {
             value
@@ -436,7 +455,20 @@ fn read_offset(project: &Path) -> Result<f32, String> {
                 .or_else(|| value.as_integer().map(|value| value as f64))
         })
         .map(|value| value as f32)
-        .ok_or_else(|| "offset is missing from param.txt".to_string())
+        .ok_or_else(|| "offset must be a number in param.txt".to_string())?;
+    if !offset.is_finite() {
+        return Err("offset must be finite in param.txt".to_string());
+    }
+    Ok(offset)
+}
+
+// reads the retention-time offset from param.txt
+fn read_offset(project: &Path) -> Result<f32, String> {
+    let param = fs::read_to_string(project.join("param.txt")).map_err(|error| error.to_string())?;
+    let parameters = param
+        .parse::<toml::Table>()
+        .map_err(|error| error.to_string())?;
+    parameter_offset(&parameters)
 }
 
 // extracts the numeric sequence from sequencex.mzML
@@ -627,38 +659,6 @@ fn normalized_header(value: &str) -> String {
         .collect()
 }
 
-// parses the simple csv files used by rfkit outputs
-fn parse_csv_line(line: &str) -> Vec<String> {
-    let mut cells = Vec::new();
-    let mut cell = String::new();
-    let mut chars = line.chars().peekable();
-    let mut quoted = false;
-    while let Some(character) = chars.next() {
-        match character {
-            '"' if quoted && chars.peek() == Some(&'"') => {
-                cell.push('"');
-                chars.next();
-            }
-            '"' => quoted = !quoted,
-            ',' if !quoted => {
-                cells.push(std::mem::take(&mut cell));
-            }
-            _ => cell.push(character),
-        }
-    }
-    cells.push(cell);
-    cells
-}
-
-// escapes one cell for rfkit_results.csv
-fn csv_cell(value: &str) -> String {
-    if value.contains(',') || value.contains('"') || value.contains('\n') || value.contains('\r') {
-        format!("\"{}\"", value.replace('"', "\"\""))
-    } else {
-        value.to_string()
-    }
-}
-
 // finds the sample list shipped with gui datasets
 fn find_sample_list(project: &Path) -> Option<PathBuf> {
     let exact = project.join("GUI test sample list.csv");
@@ -686,16 +686,12 @@ fn sample_ids_by_plate_well(project: &Path) -> HashMap<(u16, u8, u8), String> {
     let Some(path) = find_sample_list(project) else {
         return HashMap::new();
     };
-    let Ok(contents) = fs::read_to_string(path) else {
+    let Ok((headers, rows)) = read_csv_table(&path, &[]) else {
         return HashMap::new();
     };
-    let mut lines = contents.lines();
-    let Some(header_line) = lines.next() else {
-        return HashMap::new();
-    };
-    let headers = parse_csv_line(header_line)
-        .into_iter()
-        .map(|cell| normalized_header(&cell))
+    let headers = headers
+        .iter()
+        .map(|cell| normalized_header(cell))
         .collect::<Vec<_>>();
     let index = |name: &str| headers.iter().position(|header| header == name);
     let (Some(plate_index), Some(well_index), Some(sample_index)) =
@@ -705,11 +701,7 @@ fn sample_ids_by_plate_well(project: &Path) -> HashMap<(u16, u8, u8), String> {
     };
 
     let mut samples = HashMap::new();
-    for line in lines {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let cells = parse_csv_line(line);
+    for cells in rows {
         if cells.len() <= plate_index || cells.len() <= well_index || cells.len() <= sample_index {
             continue;
         }
@@ -740,11 +732,7 @@ fn sample_id_for_well(
 }
 
 // writes updated integration times back into the parsed row
-fn update_time_cell(
-    cells: &mut Vec<String>,
-    time_index: usize,
-    seconds: f32,
-) -> Result<(), String> {
+fn update_time_cell(cells: &mut [String], time_index: usize, seconds: f32) -> Result<(), String> {
     if cells.len() <= time_index {
         return Err("batch.rftime does not contain a time column".to_string());
     }
@@ -838,16 +826,14 @@ fn write_labeled_results(project: &Path) -> Result<(), String> {
     if !source.is_file() {
         return Ok(());
     }
-    let contents = fs::read_to_string(&source).map_err(|error| error.to_string())?;
-    let mut rows = contents.lines();
-    let Some(header_line) = rows.next() else {
+    let (mut header, rows) = read_csv_table(&source, &[])?;
+    if header.is_empty() {
         fs::write(project.join("RFkit_results.csv"), "").map_err(|error| error.to_string())?;
         return Ok(());
-    };
+    }
 
     let plates = plate_by_sequence(project);
     let sample_ids = sample_ids_by_plate_well(project);
-    let mut header = parse_csv_line(header_line);
     let headers = header
         .iter()
         .map(|cell| normalized_header(cell))
@@ -864,12 +850,7 @@ fn write_labeled_results(project: &Path) -> Result<(), String> {
     header.insert(insert_index, "Sample_ID".to_string());
 
     let mut output_rows = Vec::new();
-    output_rows.push(header);
-    for line in rows {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let mut cells = parse_csv_line(line);
+    for mut cells in rows {
         let label = if cells.len() > sample_index && cells.len() > well_index {
             sample_sequence(&cells[sample_index])
                 .ok()
@@ -887,18 +868,7 @@ fn write_labeled_results(project: &Path) -> Result<(), String> {
         output_rows.push(cells);
     }
 
-    let mut output = output_rows
-        .iter()
-        .map(|row| {
-            row.iter()
-                .map(|cell| csv_cell(cell))
-                .collect::<Vec<_>>()
-                .join(",")
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    output.push('\n');
-    fs::write(project.join("RFkit_results.csv"), output).map_err(|error| error.to_string())
+    write_csv_table(&project.join("RFkit_results.csv"), &header, &output_rows)
 }
 
 // removes long.csv when the gui only needed it as a temporary worker output
@@ -1086,17 +1056,26 @@ fn read_csv_table(
         ));
     }
     let contents = fs::read_to_string(path).map_err(|error| error.to_string())?;
-    let mut lines = contents.lines();
-    let headers = lines.next().map(parse_csv_line).unwrap_or_else(|| {
-        fallback_headers
-            .iter()
-            .map(|header| header.to_string())
-            .collect()
-    });
-    let rows = lines
-        .filter(|line| !line.trim().is_empty())
-        .map(parse_csv_line)
-        .collect();
+    let mut reader = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .flexible(true)
+        .from_reader(contents.as_bytes());
+    let mut records = reader.records();
+    let headers = records
+        .next()
+        .transpose()
+        .map_err(|error| error.to_string())?
+        .map(|record| record.iter().map(str::to_string).collect())
+        .unwrap_or_else(|| {
+            fallback_headers
+                .iter()
+                .map(|header| header.to_string())
+                .collect()
+        });
+    let rows = records
+        .map(|record| record.map(|record| record.iter().map(str::to_string).collect()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
     Ok((headers, rows))
 }
 
@@ -1105,25 +1084,19 @@ fn write_csv_table(path: &Path, headers: &[String], rows: &[Vec<String>]) -> Res
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    let mut output = Vec::new();
-    output.push(
-        headers
-            .iter()
-            .map(|cell| csv_cell(cell))
-            .collect::<Vec<_>>()
-            .join(","),
-    );
+    let mut writer = csv::WriterBuilder::new()
+        .flexible(true)
+        .from_path(path)
+        .map_err(|error| error.to_string())?;
+    writer
+        .write_record(headers)
+        .map_err(|error| error.to_string())?;
     for row in rows {
-        output.push(
-            row.iter()
-                .map(|cell| csv_cell(cell))
-                .collect::<Vec<_>>()
-                .join(","),
-        );
+        writer
+            .write_record(row)
+            .map_err(|error| error.to_string())?;
     }
-    let mut contents = output.join("\n");
-    contents.push('\n');
-    fs::write(path, contents).map_err(|error| error.to_string())
+    writer.flush().map_err(|error| error.to_string())
 }
 
 // reads current or backup editor content
@@ -1135,9 +1108,14 @@ fn read_data_editor_content_from_path(
     let file = data_editor_file(project, kind)?;
     let backups = list_data_editor_backups(project, kind)?;
     if file.format == "text" {
+        let text = match fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => return Err(error.to_string()),
+        };
         return Ok(DataEditorContent {
             file,
-            text: Some(fs::read_to_string(path).unwrap_or_default()),
+            text: Some(text),
             headers: Vec::new(),
             rows: Vec::new(),
             backups,
@@ -1199,9 +1177,29 @@ fn backup_data_editor_file(
         .extension()
         .and_then(|value| value.to_str())
         .unwrap_or("txt");
-    let name = format!("{}_{}.{}", kind, timestamp_token()?, extension);
-    fs::copy(path, directory.join(&name)).map_err(|error| error.to_string())?;
-    Ok(Some(name))
+    let timestamp = timestamp_token()?;
+    let mut suffix = 0_u64;
+    let mut source = fs::File::open(path).map_err(|error| error.to_string())?;
+    loop {
+        let name = if suffix == 0 {
+            format!("{kind}_{timestamp}.{extension}")
+        } else {
+            format!("{kind}_{timestamp}_{suffix}.{extension}")
+        };
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(directory.join(&name))
+        {
+            Ok(mut backup) => {
+                std::io::copy(&mut source, &mut backup).map_err(|error| error.to_string())?;
+                backup.flush().map_err(|error| error.to_string())?;
+                return Ok(Some(name));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => suffix += 1,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
 }
 
 // counts mzml inputs recursively
@@ -1239,27 +1237,6 @@ fn count_transition_rows(path: &Path) -> usize {
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .skip(1)
         .count()
-}
-
-// checks whether expected output files exist
-fn has_matching_file(project: &Path, prefix: &str, extension: &str) -> bool {
-    fs::read_dir(project)
-        .ok()
-        .into_iter()
-        .flat_map(|entries| entries.filter_map(Result::ok))
-        .map(|entry| entry.path())
-        .any(|path| {
-            path.is_file()
-                && path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| {
-                        name.starts_with(prefix)
-                            && name
-                                .to_ascii_lowercase()
-                                .ends_with(&extension.to_ascii_lowercase())
-                    })
-        })
 }
 
 // lists plot binaries in numeric sequence order
@@ -1495,12 +1472,8 @@ fn inspect_project(project: &Path) -> ProjectSummary {
                     issues.push("transition_list is missing from param.txt".to_string());
                 }
 
-                if parameters
-                    .get("offset")
-                    .and_then(toml::Value::as_float)
-                    .is_none()
-                {
-                    issues.push("offset is missing from param.txt".to_string());
+                if let Err(error) = parameter_offset(&parameters) {
+                    issues.push(error);
                 }
             }
             Err(error) => issues.push(format!("param.txt could not be read: {error}")),
@@ -1523,7 +1496,6 @@ fn inspect_project(project: &Path) -> ProjectSummary {
         acq_time: project.join("acq_time.csv").is_file(),
         results_csv: preferred_results_file(project).is_file(),
         misc_data: project.join("misc").is_dir(),
-        pdf_plots: has_matching_file(project, "plot_", ".pdf"),
     };
 
     ProjectSummary {
@@ -1611,20 +1583,19 @@ fn visualizer_transition(
     let sample_ids = sample_ids_by_plate_well(&project);
 
     for path in plot_files(&project)? {
-        match parse_selected_transition(&path, &transition, &plates, &sip_order, &sample_ids)? {
-            Some(sample) => {
-                transition_seen = true;
-                if !sample.wells.is_empty() {
-                    for point in &sample.points {
-                        global_rt_min = global_rt_min.min(point.rt);
-                        global_rt_max = global_rt_max.max(point.rt);
-                        global_intensity_max = global_intensity_max.max(point.intensity);
-                    }
-                    well_count += sample.wells.len();
-                    samples.push(sample);
+        if let Some(sample) =
+            parse_selected_transition(&path, &transition, &plates, &sip_order, &sample_ids)?
+        {
+            transition_seen = true;
+            if !sample.wells.is_empty() {
+                for point in &sample.points {
+                    global_rt_min = global_rt_min.min(point.rt);
+                    global_rt_max = global_rt_max.max(point.rt);
+                    global_intensity_max = global_intensity_max.max(point.intensity);
                 }
+                well_count += sample.wells.len();
+                samples.push(sample);
             }
-            None => {}
         }
     }
 
@@ -1837,7 +1808,7 @@ fn visualizer_rename_bounds_backup(
         return Err("the selected dataset folder does not exist".to_string());
     }
     let name = safe_backup_name(&name)?.to_string();
-    if name == ORIGINAL_BOUNDS_BACKUP {
+    if name.eq_ignore_ascii_case(ORIGINAL_BOUNDS_BACKUP) {
         return Err("Original batch.rftime cannot be renamed".to_string());
     }
     if !project.join(BOUNDS_BACKUP_DIR).join(&name).is_file() {
@@ -1865,7 +1836,7 @@ fn visualizer_delete_bounds_backup(
         return Err("the selected dataset folder does not exist".to_string());
     }
     let name = safe_backup_name(&name)?.to_string();
-    if name == ORIGINAL_BOUNDS_BACKUP {
+    if name.eq_ignore_ascii_case(ORIGINAL_BOUNDS_BACKUP) {
         return Err("Original batch.rftime cannot be deleted".to_string());
     }
     let source = project.join(BOUNDS_BACKUP_DIR).join(&name);
@@ -1911,15 +1882,9 @@ async fn visualizer_restore_bounds_backup(
     if !project.is_dir() {
         return Err("the selected dataset folder does not exist".to_string());
     }
-    if state
-        .0
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return Err("RFkit is already running".to_string());
-    }
-    emit_status(&app, "running");
     let name = safe_backup_name(&name)?.to_string();
+    let run = state.start()?;
+    emit_status(&app, "running");
     let restore_name = name.clone();
     let worker_app = app.clone();
     let worker_project = project.clone();
@@ -1941,7 +1906,7 @@ async fn visualizer_restore_bounds_backup(
         project,
     });
 
-    state.0.store(false, Ordering::Release);
+    drop(run);
     emit_status(&app, if result.is_ok() { "complete" } else { "failed" });
     if result.is_ok() {
         let mut settings = read_settings(&app).unwrap_or_default();
@@ -1967,16 +1932,9 @@ async fn visualizer_save_bounds(
     if !project.is_dir() {
         return Err("the selected dataset folder does not exist".to_string());
     }
-    if state
-        .0
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return Err("RFkit is already running".to_string());
-    }
-
+    let name = writable_bounds_backup_name(&backup_name)?.to_string();
+    let run = state.start()?;
     emit_status(&app, "running");
-    let name = safe_backup_name(&backup_name)?.to_string();
     let worker_app = app.clone();
     let worker_project = project.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
@@ -1994,7 +1952,7 @@ async fn visualizer_save_bounds(
     .map_err(|error| error.to_string())
     .and_then(|result| result);
 
-    state.0.store(false, Ordering::Release);
+    drop(run);
     emit_status(&app, if result.is_ok() { "complete" } else { "failed" });
     if let Ok(result) = &result
         && let Some(backup) = &result.backup
@@ -2206,14 +2164,7 @@ async fn run_all(
     if !project.is_dir() {
         return Err("the selected project folder does not exist".to_string());
     }
-    if state
-        .0
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return Err("RFkit is already running".to_string());
-    }
-
+    let run = state.start()?;
     emit_status(&app, "running");
     let worker_app = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || run_worker(worker_app, project))
@@ -2221,7 +2172,7 @@ async fn run_all(
         .map_err(|error| error.to_string())
         .and_then(|result| result);
 
-    state.0.store(false, Ordering::Release);
+    drop(run);
     emit_status(&app, if result.is_ok() { "complete" } else { "failed" });
     result
 }
@@ -2259,6 +2210,249 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TestProject(PathBuf);
+
+    impl TestProject {
+        fn new(label: &str) -> Self {
+            static NEXT_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "rfkit_{label}_{}_{}_{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
+                NEXT_ID.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TestProject {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn csv_editor_round_trips_quoted_multiline_cells_and_crlf() {
+        let project = TestProject::new("csv_roundtrip");
+        let path = project.0.join("samples.csv");
+        let headers = vec!["Plate".into(), "Well".into(), "Sample_ID".into()];
+        let rows = vec![
+            vec![
+                "Plate 1".into(),
+                "A1".into(),
+                "first, \"quoted\"\r\nsecond".into(),
+            ],
+            vec!["Plate 1".into(), "A2".into(), "".into()],
+        ];
+        write_csv_table(&path, &headers, &rows).unwrap();
+        assert_eq!(read_csv_table(&path, &[]).unwrap(), (headers, rows));
+    }
+
+    #[test]
+    fn csv_editor_preserves_row_widths_and_cell_whitespace() {
+        let project = TestProject::new("csv_rows");
+        let path = project.0.join("samples.csv");
+        fs::write(&path, "\u{feff}A,B\r\n\r\n short \r\n1,2,3\r\n,\r\n").unwrap();
+        let (headers, rows) = read_csv_table(&path, &[]).unwrap();
+        assert_eq!(headers, ["A", "B"]);
+        assert_eq!(rows, [vec![" short "], vec!["1", "2", "3"], vec!["", ""]]);
+        write_csv_table(&path, &headers, &rows).unwrap();
+        assert_eq!(read_csv_table(&path, &[]).unwrap(), (headers, rows));
+    }
+
+    #[test]
+    fn labeled_results_preserve_multiline_sample_ids_and_transition_names() {
+        let project = TestProject::new("multiline_labels");
+        fs::write(
+            project.0.join("batch.rftime"),
+            "plate sip seq row col siptime sipsensor\n--------------------------------------\nPlate1 1 1 1 1 3.073 0\n",
+        )
+        .unwrap();
+        fs::write(
+            project.0.join("GUI test sample list.csv"),
+            "Plate,Well,Sample_ID\r\nPlate1,A1,\"sample \"\"quoted\"\"\r\nsecond line\"\r\n",
+        )
+        .unwrap();
+        fs::write(
+            project.0.join("long.csv"),
+            "sample,ID,well,area\r\nsequence1.mzML,\"Cer\ntransition\",\"(1, 1)\",1200\r\n",
+        )
+        .unwrap();
+        write_labeled_results(&project.0).unwrap();
+        let (headers, rows) = read_csv_table(&project.0.join("RFkit_results.csv"), &[]).unwrap();
+        assert_eq!(headers, ["sample", "ID", "well", "Sample_ID", "area"]);
+        assert_eq!(
+            rows,
+            [vec![
+                "sequence1.mzML",
+                "Cer\ntransition",
+                "(1, 1)",
+                "sample \"quoted\"\r\nsecond line",
+                "1200",
+            ]]
+        );
+    }
+
+    #[test]
+    fn run_state_rejects_duplicates_and_releases_after_early_error() {
+        let state = RunState(AtomicBool::new(false));
+        let run = state.start().unwrap();
+        assert!(state.start().is_err());
+        drop(run);
+        let failing_operation = || -> Result<(), String> {
+            let _run = state.start()?;
+            safe_backup_name("../invalid.rftime")?;
+            Ok(())
+        };
+        assert!(failing_operation().is_err());
+        let _retry = state.start().unwrap();
+    }
+
+    #[test]
+    fn project_inspection_accepts_integer_offsets_like_bounds_editor() {
+        let project = TestProject::new("integer_offset");
+        for (literal, expected) in [("1", 1.0), ("-2", -2.0), ("0.5", 0.5)] {
+            fs::write(project.0.join("param.txt"), format!("offset = {literal}\n")).unwrap();
+            assert_eq!(read_offset(&project.0).unwrap(), expected);
+            let summary = inspect_project(&project.0);
+            assert!(
+                !summary.issues.iter().any(|issue| issue.contains("offset")),
+                "valid offset {literal} was rejected: {:?}",
+                summary.issues
+            );
+        }
+        for literal in ["\"invalid\"", "nan", "inf", "1e100"] {
+            fs::write(project.0.join("param.txt"), format!("offset = {literal}\n")).unwrap();
+            assert!(read_offset(&project.0).is_err());
+            assert!(
+                inspect_project(&project.0)
+                    .issues
+                    .iter()
+                    .any(|issue| issue.contains("offset"))
+            );
+        }
+    }
+
+    fn plot_fixture() -> Vec<u8> {
+        let mut bytes = vec![1];
+        bytes.extend_from_slice(b"Cer\0");
+        bytes.extend_from_slice(&3_u16.to_le_bytes());
+        for (rt, intensity) in [(1.0_f32, 10.0_f32), (1.5, 30.0), (2.0, 10.0)] {
+            bytes.extend_from_slice(&rt.to_le_bytes());
+            bytes.extend_from_slice(&intensity.to_le_bytes());
+        }
+        bytes.push(1);
+        bytes.extend_from_slice(b"(1, 1)\0");
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&3_u16.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn plot_binary_parses_integration_and_rejects_every_truncated_prefix() {
+        let project = TestProject::new("plot_binary");
+        let path = project.0.join("plot_sequence1.mzML.bin");
+        let bytes = plot_fixture();
+        for end in 0..bytes.len() {
+            fs::write(&path, &bytes[..end]).unwrap();
+            assert!(transition_names(&path).is_err(), "accepted {end} bytes");
+            assert!(
+                parse_selected_transition(
+                    &path,
+                    "Cer",
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &HashMap::new()
+                )
+                .is_err(),
+                "accepted {end} bytes"
+            );
+        }
+        fs::write(&path, bytes).unwrap();
+        assert_eq!(transition_names(&path).unwrap(), ["Cer"]);
+        let sample = parse_selected_transition(
+            &path,
+            "Cer",
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(sample.sample_id, "sequence1.mzML");
+        assert_eq!(sample.points.len(), 3);
+        assert_eq!(sample.wells.len(), 1);
+        let well = &sample.wells[0];
+        assert_eq!((well.start_index, well.end_index), (0, 2));
+        assert_eq!((well.rt_start, well.apex_rt, well.rt_end), (1.0, 1.5, 2.0));
+        assert_eq!((well.height, well.area), (30.0, 1200.0));
+        assert!(
+            parse_selected_transition(
+                &path,
+                "missing",
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn editor_backups_preserve_every_snapshot() {
+        let project = TestProject::new("editor_snapshots");
+        let live = project.0.join("param.txt");
+        let mut snapshots = Vec::new();
+        for content in ["first", "second", "third", "fourth"] {
+            fs::write(&live, content).unwrap();
+            let name = backup_data_editor_file(&project.0, "param", &live)
+                .unwrap()
+                .unwrap();
+            snapshots.push((name, content));
+        }
+        for (name, content) in snapshots {
+            assert_eq!(
+                fs::read_to_string(project.0.join("data_file_backups/param").join(name)).unwrap(),
+                content
+            );
+        }
+    }
+
+    #[test]
+    fn bounds_backup_cannot_overwrite_original() {
+        let project = TestProject::new("protected_bounds");
+        let live = project.0.join("batch.rftime");
+        fs::write(&live, "original bounds").unwrap();
+        ensure_original_bounds(&project.0).unwrap();
+        fs::write(&live, "edited bounds").unwrap();
+        assert!(backup_bounds(&project.0, ORIGINAL_BOUNDS_BACKUP).is_err());
+        assert!(backup_bounds(&project.0, "BATCH_RFTIME_ORIGINAL.rftime").is_err());
+        assert_eq!(
+            fs::read_to_string(
+                project
+                    .0
+                    .join(BOUNDS_BACKUP_DIR)
+                    .join(ORIGINAL_BOUNDS_BACKUP)
+            )
+            .unwrap(),
+            "original bounds"
+        );
+    }
+
+    #[test]
+    fn editor_reports_unreadable_text_instead_of_empty_content() {
+        let project = TestProject::new("invalid_param_encoding");
+        fs::write(project.0.join("param.txt"), [0xff, 0xfe]).unwrap();
+        assert!(
+            data_editor_read(project.0.to_string_lossy().into_owned(), "param".into()).is_err()
+        );
+    }
 
     #[test]
     fn worker_name_uses_platform_extension() {

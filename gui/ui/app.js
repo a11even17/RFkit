@@ -24,8 +24,11 @@ const elements = {
     document.querySelector("#modal-choose-project"),
   ],
   runButton: document.querySelector("#run-all"),
+  runPanel: document.querySelector("#run-panel"),
+  runStatus: document.querySelector("#run-status"),
   editDataButton: document.querySelector("#edit-data-tab"),
   runTab: document.querySelector("#run-tab"),
+  brandHome: document.querySelector("#brand-home"),
   visualizerTab: document.querySelector("#visualizer-tab"),
   runView: document.querySelector("#run-view"),
   visualizerView: document.querySelector("#visualizer-view"),
@@ -54,6 +57,7 @@ const elements = {
   visualizerAnalyte: document.querySelector("#visualizer-analyte"),
   visualizerStatus: document.querySelector("#visualizer-status"),
   visualizerPlots: document.querySelector("#visualizer-plots"),
+  visualizerEmpty: document.querySelector("#visualizer-empty"),
   themeToggle: document.querySelector("#theme-toggle"),
   guiScale: document.querySelector("#gui-scale"),
   clearActivity: document.querySelector("#clear-activity"),
@@ -84,6 +88,7 @@ const elements = {
 
 let project = null;
 let running = false;
+let runFailed = false;
 const visualizer = {
   projectPath: null,
   transitions: [],
@@ -97,6 +102,8 @@ const visualizer = {
   pendingSave: null,
   transitionMaxRtSpan: null,
   chartColors: null,
+  projectToken: 0,
+  loadToken: 0,
   renderToken: 0,
   rendering: false,
   rangeManuallySet: false,
@@ -236,6 +243,21 @@ function setOutput(element, complete) {
   element.querySelector("strong").textContent = complete ? "ready" : "waiting";
 }
 
+// mirrors run and output state on the processing step
+function updateRunStatus() {
+  const outputs = Object.keys(elements.outputs);
+  const complete = Boolean(project) && outputs.every((key) => project.outputs?.[key]);
+  const status = running
+    ? "running"
+    : runFailed
+      ? "failed"
+      : complete
+        ? "complete"
+        : "waiting";
+  elements.runStatus.className = `step-status ${status}`;
+  elements.runStatus.textContent = status;
+}
+
 // updates the run page from backend project state
 function renderProject(summary) {
   const previousPath = project?.path;
@@ -247,6 +269,7 @@ function renderProject(summary) {
   elements.transitionFile.textContent = summary.transitionFile ?? "not found";
   elements.workerName.textContent = summary.workerName ?? "not found";
   if (previousPath && previousPath !== summary.path) {
+    runFailed = false;
     resetVisualizer();
   }
 
@@ -267,6 +290,7 @@ function renderProject(summary) {
   }
 
   elements.runButton.disabled = running || !summary.canRun;
+  updateRunStatus();
   updateSaveButton();
   updateBackupButtons();
   elements.projectModal.classList.add("hidden");
@@ -277,6 +301,7 @@ function setRunning(value) {
   running = value;
   elements.runButton.classList.toggle("running", value);
   elements.runButton.disabled = value || !project?.canRun;
+  updateRunStatus();
   updateSaveButton();
   updateBackupButtons();
 }
@@ -325,6 +350,7 @@ async function runAll() {
     showToast("Resolve the project issues before running RFkit.", "error");
     return;
   }
+  runFailed = false;
   setRunning(true);
   addActivity("RFkit run started.");
   try {
@@ -347,6 +373,7 @@ async function runAll() {
     addActivity("RFkit run completed successfully.", "success");
     showToast("RFkit run complete.");
   } catch (error) {
+    runFailed = true;
     addActivity(String(error), "error");
     showToast(String(error), "error");
     try {
@@ -781,11 +808,15 @@ function resetVisualizer() {
   visualizer.pendingSave = null;
   visualizer.transitionMaxRtSpan = null;
   visualizer.chartColors = null;
+  visualizer.projectToken += 1;
+  visualizer.loadToken += 1;
   visualizer.renderToken += 1;
   visualizer.rendering = false;
   visualizer.rangeManuallySet = false;
   elements.visualizerSearch.value = "";
   elements.visualizerTransition.replaceChildren(new Option("Select a transition", ""));
+  elements.visualizerTransition.disabled = false;
+  elements.visualizerRefresh.disabled = false;
   elements.visualizerBackups.replaceChildren(new Option("No saved versions yet", ""));
   elements.visualizerBackups.disabled = true;
   elements.visualizerSave.disabled = true;
@@ -795,8 +826,10 @@ function resetVisualizer() {
   elements.visualizerDeleteBackup.disabled = true;
   elements.visualizerRenameBackup.disabled = true;
   elements.visualizerPlots.replaceChildren();
+  elements.visualizerView.classList.remove("has-plots");
+  elements.visualizerEmpty.classList.remove("hidden");
   elements.visualizerAnalyte.textContent = "Choose a transition to render RFkit chromatograms.";
-  elements.visualizerDataset.textContent = project?.path ?? "Select a project in the Run tab first.";
+  elements.visualizerDataset.textContent = project?.path ?? "Select a processed dataset in Workflow first.";
   elements.visualizerCancel.classList.add("hidden");
   visualizerMessage("Ready");
   updateSaveButton();
@@ -934,10 +967,13 @@ async function refreshBoundsBackups(selected = null) {
     updateBackupButtons();
     return "";
   }
+  const projectPath = project.path;
+  const projectToken = visualizer.projectToken;
   try {
     const list = await invoke("visualizer_list_bounds_backups", {
-      projectPath: project.path,
+      projectPath,
     });
+    if (projectToken !== visualizer.projectToken || project?.path !== projectPath) return "";
     visualizer.backupLabels = list.labels ?? {};
     const fragment = document.createDocumentFragment();
     if (!list.backups.length) {
@@ -959,6 +995,7 @@ async function refreshBoundsBackups(selected = null) {
       : "";
     elements.visualizerBackups.value = requested ?? remembered ?? original;
   } catch {
+    if (projectToken !== visualizer.projectToken || project?.path !== projectPath) return "";
     visualizer.backupLabels = {};
     elements.visualizerBackups.replaceChildren(new Option("No saved versions yet", ""));
     updateBackupButtons();
@@ -1483,7 +1520,7 @@ function fallbackZoomChart() {
 async function initializeVisualizer() {
   if (!project) {
     resetVisualizer();
-    visualizerMessage("Select a project in the Run tab first.");
+    visualizerMessage("Select a processed dataset in Workflow first.");
     return;
   }
   elements.visualizerDataset.textContent = project.path;
@@ -1494,23 +1531,32 @@ async function initializeVisualizer() {
     return;
   }
   if (visualizer.projectPath === project.path && visualizer.transitions.length) {
+    const projectPath = project.path;
+    const projectToken = visualizer.projectToken;
     await refreshBoundsBackups();
+    if (projectToken !== visualizer.projectToken || project?.path !== projectPath) return;
     visualizerMessage(`${visualizer.transitions.length.toLocaleString()} transitions ready`);
     return;
   }
 
   resetVisualizer();
-  visualizer.projectPath = project.path;
-  elements.visualizerDataset.textContent = project.path;
+  const projectPath = project.path;
+  const projectToken = visualizer.projectToken;
+  visualizer.projectPath = projectPath;
+  elements.visualizerDataset.textContent = projectPath;
   visualizerMessage("Loading transition index...");
   try {
-    visualizer.transitions = isDesktop
-      ? await invoke("visualizer_list_transitions", { projectPath: project.path })
+    const transitions = isDesktop
+      ? await invoke("visualizer_list_transitions", { projectPath })
       : ["Mock transition", "Preview analyte"];
+    if (projectToken !== visualizer.projectToken || project?.path !== projectPath) return;
+    visualizer.transitions = transitions;
     populateVisualizerTransitions();
     await refreshBoundsBackups();
+    if (projectToken !== visualizer.projectToken || project?.path !== projectPath) return;
     visualizerMessage(`${visualizer.transitions.length.toLocaleString()} transitions ready`);
   } catch (error) {
+    if (projectToken !== visualizer.projectToken || project?.path !== projectPath) return;
     visualizerMessage(String(error));
     showToast(String(error), "error");
   }
@@ -2216,9 +2262,10 @@ function redrawChart(chart, hoverIndex = null) {
 function chartRtAtClientX(chart, clientX) {
   const rect = chart.canvas.getBoundingClientRect();
   const domain = visualizerDomain(chart);
+  const localX = (clientX - rect.left) * chart.width / (rect.width || chart.width);
   const x = Math.max(
     chartMargins.left,
-    Math.min(chart.width - chartMargins.right, clientX - rect.left),
+    Math.min(chart.width - chartMargins.right, localX),
   );
   return (
     domain.rtStart +
@@ -2235,8 +2282,8 @@ function chartPointIndexAtClientX(chart, clientX) {
 // checks whether the pointer is inside plot bounds
 function chartPointerInsidePlot(chart, event) {
   const rect = chart.canvas.getBoundingClientRect();
-  const x = event.clientX - rect.left;
-  const y = event.clientY - rect.top;
+  const x = (event.clientX - rect.left) * chart.width / (rect.width || chart.width);
+  const y = (event.clientY - rect.top) * chart.height / (rect.height || chart.height);
   return (
     x >= chartMargins.left &&
     x <= chart.width - chartMargins.right &&
@@ -2258,7 +2305,7 @@ function zoomChartHorizontal(chart, factor, anchorClientX = null) {
       ? (chart.view.rtStart + chart.view.rtEnd) / 2
       : chartRtAtClientX(chart, anchorClientX);
   anchorRt = Math.max(chart.view.rtStart, Math.min(chart.view.rtEnd, anchorRt));
-  const ratio = (anchorRt - chart.view.rtStart) / currentSpan || 0.5;
+  const ratio = (anchorRt - chart.view.rtStart) / currentSpan;
   let rtStart = anchorRt - nextSpan * ratio;
   let rtEnd = rtStart + nextSpan;
   if (rtStart < chart.view.baseRtStart) {
@@ -2308,6 +2355,8 @@ function chartColors() {
       blue: cssColor("--blue"),
       green: cssColor("--green"),
       surface: cssColor("--surface"),
+      areaOpacity: Number(cssColor("--plot-integration-area-opacity")) || 0.52,
+      windowOpacity: Number(cssColor("--plot-integration-window-opacity")) || 0.16,
     };
   }
   return visualizer.chartColors;
@@ -2373,7 +2422,7 @@ function drawChart(chart, hoverIndex = null, tooltipText = null) {
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
   ctx.clearRect(0, 0, width, height);
 
-  const { ink, muted, line, blue, green, surface } = chartColors();
+  const { ink, muted, line, blue, green, surface, areaOpacity, windowOpacity } = chartColors();
   const margins = chartMargins;
   const plotWidth = width - margins.left - margins.right;
   const plotHeight = height - margins.top - margins.bottom;
@@ -2409,7 +2458,7 @@ function drawChart(chart, hoverIndex = null, tooltipText = null) {
   ctx.translate(10, margins.top + plotHeight / 2);
   ctx.rotate(-Math.PI / 2);
   ctx.fillStyle = muted;
-  ctx.font = "9px Inter, Segoe UI, sans-serif";
+  ctx.font = "9px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif";
   ctx.textAlign = "center";
   ctx.fillText("intensity", 0, 0);
   ctx.restore();
@@ -2427,10 +2476,12 @@ function drawChart(chart, hoverIndex = null, tooltipText = null) {
   const windowRight = x(integration.rtEnd);
   const shadeLeft = Math.max(plotLeft, Math.min(plotRight, Math.min(windowLeft, windowRight)));
   const shadeRight = Math.max(plotLeft, Math.min(plotRight, Math.max(windowLeft, windowRight)));
-  ctx.fillStyle = "rgba(71, 124, 147, 0.16)";
+  ctx.fillStyle = "rgb(71, 124, 147)";
+  ctx.globalAlpha = windowOpacity;
   if (shadeRight > shadeLeft) {
     ctx.fillRect(shadeLeft, margins.top, shadeRight - shadeLeft, plotHeight);
   }
+  ctx.globalAlpha = 1;
 
   ctx.save();
   clipPlot();
@@ -2445,8 +2496,10 @@ function drawChart(chart, hoverIndex = null, tooltipText = null) {
     }
     ctx.lineTo(x(points[end].rt), y(0));
     ctx.closePath();
-    ctx.fillStyle = "rgba(95, 147, 105, 0.52)";
+    ctx.fillStyle = "rgb(95, 147, 105)";
+    ctx.globalAlpha = areaOpacity;
     ctx.fill();
+    ctx.globalAlpha = 1;
   }
 
   ctx.beginPath();
@@ -2516,7 +2569,7 @@ function drawChart(chart, hoverIndex = null, tooltipText = null) {
   ctx.restore();
 
   ctx.fillStyle = ink;
-  ctx.font = "700 10px Inter, Segoe UI, sans-serif";
+  ctx.font = "700 10px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif";
   ctx.textAlign = "center";
   ctx.fillText(chartTitle(sample, well), width / 2, 12);
   ctx.fillStyle = muted;
@@ -2546,10 +2599,10 @@ function drawChart(chart, hoverIndex = null, tooltipText = null) {
       plotBottom - boxHeight - 4,
       Math.max(plotTop + 4, tooltip.py - boxHeight - 8),
     );
-    ctx.fillStyle = "rgba(36, 49, 58, 0.92)";
-    roundedRect(ctx, boxX, boxY, boxWidth, boxHeight, 5);
+    ctx.fillStyle = ink;
+    roundedRect(ctx, boxX, boxY, boxWidth, boxHeight, 3);
     ctx.fill();
-    ctx.fillStyle = "#fff";
+    ctx.fillStyle = surface;
     ctx.fillText(tooltip.text, boxX + boxWidth / 2, boxY + 13);
   }
 }
@@ -2776,6 +2829,8 @@ function renderVisualizerCharts(data, options = {}) {
   updateSaveButton();
   updateBackupButtons();
   elements.visualizerPlots.replaceChildren();
+  elements.visualizerView.classList.add("has-plots");
+  elements.visualizerEmpty.classList.add("hidden");
   elements.visualizerCancel.classList.remove("hidden");
   elements.visualizerTransition.disabled = true;
   elements.visualizerRefresh.disabled = true;
@@ -2847,38 +2902,66 @@ async function renderSelectedTransition(options = {}) {
     return;
   }
   cancelVisualizerRendering();
+  const token = ++visualizer.loadToken;
+  const projectPath = project.path;
   elements.visualizerPlots.replaceChildren();
   visualizerMessage("Loading transition data...");
   try {
     const data = isDesktop
       ? await invoke("visualizer_transition", {
-          projectPath: project.path,
+          projectPath,
           transition,
         })
       : { ...mockVisualizerData, transition };
+    if (token !== visualizer.loadToken || project?.path !== projectPath) return;
     renderVisualizerCharts(data, {
       scrollY,
       keepUniformView: options.keepUniformView === true,
     });
   } catch (error) {
+    if (token !== visualizer.loadToken || project?.path !== projectPath) return;
     visualizerMessage(String(error));
     showToast(String(error), "error");
   }
 }
 
-// redraws all plots after size or theme changes
-function redrawVisualizerCharts() {
+// updates presentation without replacing unsaved integration edits
+function redrawVisualizerCharts(options = {}) {
   if (!visualizer.data || visualizer.rendering) return;
-  renderVisualizerCharts(visualizer.data);
+  const { width, height } = visualizerDimensions();
+  if (options.resetView === true) {
+    visualizer.transitionMaxRtSpan = visualizer.rangeManuallySet
+      ? null
+      : transitionMaxRtSpan(visualizer.charts);
+  }
+  for (const chart of visualizer.charts) {
+    chart.width = width;
+    chart.height = height;
+    chart.frame.style.width = `${width}px`;
+    chart.frame.style.height = `${height}px`;
+    if (options.resetView === true) {
+      chart.view = initialChartView(chart.sample, chart.well);
+      settleChartAxisLabels(chart, true);
+    }
+    redrawChart(chart);
+  }
 }
 
-const guiScales = new Set([100, 125, 150, 175, 200]);
+const guiScales = new Set([90, 100, 110, 125, 150, 175, 200]);
+const guiWidthBreakpoints = [1100, 850, 680, 620];
 
-// uses the scaled viewport width for the existing responsive layouts
+// css zoom leaves media queries on the unscaled viewport, so the scaled
+// width tiers and height are exposed for the responsive layouts instead
 function updateGuiScaleLayout(scale) {
-  const effectiveWidth = window.innerWidth / (scale / 100);
-  document.documentElement.dataset.guiLayout =
-    effectiveWidth <= 640 ? "small" : effectiveWidth <= 820 ? "compact" : "full";
+  const factor = scale / 100;
+  const effectiveWidth = window.innerWidth / factor;
+  document.documentElement.dataset.guiWidth = guiWidthBreakpoints
+    .filter((breakpoint) => effectiveWidth <= breakpoint)
+    .join(" ");
+  document.documentElement.style.setProperty(
+    "--viewport-height",
+    `${window.innerHeight / factor}px`,
+  );
 }
 
 // scales the complete interface and remembers the accessibility preference
@@ -2963,6 +3046,9 @@ async function bootstrap() {
     button.addEventListener("click", chooseProject);
   }
   elements.runButton.addEventListener("click", runAll);
+  elements.runPanel.addEventListener("click", (event) => {
+    if (!event.target.closest("button")) elements.runButton.click();
+  });
   elements.editDataButton.addEventListener("click", openDataEditor);
   elements.dataEditorClose.addEventListener("click", closeDataEditor);
   elements.dataEditorSave.addEventListener("click", saveDataEditorFile);
@@ -2976,6 +3062,7 @@ async function bootstrap() {
     openDataEditorBackup(elements.dataEditorBackups.value),
   );
   elements.runTab.addEventListener("click", showRunView);
+  elements.brandHome.addEventListener("click", showRunView);
   elements.visualizerTab.addEventListener("click", showVisualizerView);
   elements.visualizerTransition.addEventListener("change", () => {
     elements.visualizerRtStart.value = "0";
@@ -3015,14 +3102,14 @@ async function bootstrap() {
       elements.visualizerRtStart.valueAsNumber > 0 ||
       elements.visualizerRtEnd.valueAsNumber > 0;
     visualizer.uniformView = null;
-    redrawVisualizerCharts();
+    redrawVisualizerCharts({ resetView: true });
   });
   elements.visualizerRtEnd.addEventListener("change", () => {
     visualizer.rangeManuallySet =
       elements.visualizerRtStart.valueAsNumber > 0 ||
       elements.visualizerRtEnd.valueAsNumber > 0;
     visualizer.uniformView = null;
-    redrawVisualizerCharts();
+    redrawVisualizerCharts({ resetView: true });
   });
   elements.visualizerIntensity.addEventListener("input", () => {
     if (!visualizer.rendering) {

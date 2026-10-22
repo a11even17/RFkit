@@ -1,15 +1,15 @@
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
-use std::io::Read;
+use std::error::Error;
+use std::io::{ErrorKind, Read};
 use std::str;
 pub struct Q1Q3RtI {
     pub q1: f32,
     pub q3: f32,
     pub rt_i_l: Vec<(f32, f32)>,
 }
-#[must_use]
-pub fn mzml(mzml_f: &std::path::Path) -> (String, Vec<Q1Q3RtI>) {
-    let mut reader = Reader::from_file(mzml_f).unwrap();
+pub fn mzml(mzml_f: &std::path::Path) -> Result<Vec<Q1Q3RtI>, Box<dyn Error>> {
+    let mut reader = Reader::from_file(mzml_f)?;
     reader.config_mut().trim_text(true);
     let mut stack = Vec::<Vec<u8>>::new();
     let mut buf = Vec::new();
@@ -20,43 +20,46 @@ pub fn mzml(mzml_f: &std::path::Path) -> (String, Vec<Q1Q3RtI>) {
     let mut zlibc = None;
     let mut pre64 = None;
     let mut time_arr = None;
+    let mut time_in_seconds = false;
     let mut q1 = f32::NAN;
     let mut q3 = f32::NAN;
     let mut q1q3eics = Vec::new();
-    let mut ts = String::new();
+    let mut saw_run = false;
     loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) => {
-                stack.push(e.local_name().as_ref().to_vec());
+        match reader.read_event_into(&mut buf)? {
+            Event::Eof => break,
+            Event::Start(e) => {
                 if e.local_name().as_ref() == b"run" {
-                    if let Ok(Some(value)) = e.try_get_attribute("startTimeStamp") {
-                        ts = String::from_utf8(value.value.to_vec()).unwrap();
-                    }
-                    break;
+                    saw_run = true;
                 }
-            }
-            Ok(Event::End(_)) => {
-                stack.pop();
-            }
-            _ => (),
-        }
-        buf.clear();
-    }
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Err(e) => panic!("Error at position {}: {e:?}", reader.buffer_position()),
-            Ok(Event::Eof) => break,
-            Ok(Event::Start(e)) => {
+                if e.local_name().as_ref() == b"chromatogram" {
+                    rt_l.clear();
+                    i_l.clear();
+                    q1 = f32::NAN;
+                    q3 = f32::NAN;
+                }
                 if e.local_name().as_ref() == b"binaryDataArray" {
                     zlibc = None;
                     pre64 = None;
                     time_arr = None;
+                    time_in_seconds = false;
                 }
                 stack.push(e.local_name().as_ref().to_vec());
             }
-            Ok(Event::End(e)) => {
+            Event::End(e) => {
                 if e.local_name().as_ref() == b"chromatogram" {
                     if q1.is_finite() && q3.is_finite() {
+                        if rt_l.is_empty() || rt_l.len() != i_l.len() {
+                            return Err("chromatogram time and intensity arrays must be nonempty and have equal lengths".into());
+                        }
+                        if rt_l.iter().chain(&i_l).any(|value| !value.is_finite())
+                            || rt_l.windows(2).any(|pair| pair[0] > pair[1])
+                        {
+                            return Err(
+                                "chromatogram values must be finite and retention times sorted"
+                                    .into(),
+                            );
+                        }
                         q1q3eics.push(Q1Q3RtI {
                             q1,
                             q3,
@@ -68,20 +71,20 @@ pub fn mzml(mzml_f: &std::path::Path) -> (String, Vec<Q1Q3RtI>) {
                 }
                 stack.pop();
             }
-            Ok(Event::Empty(e)) if e.local_name().as_ref() == b"cvParam" => {
+            Event::Empty(e) if e.local_name().as_ref() == b"cvParam" => {
                 let Ok(Some(accession)) = e.try_get_attribute("accession") else {
                     continue;
                 };
                 match accession.value.as_ref() {
-                    b"MS:1000827" => match stack[stack.len() - 2].as_slice() {
-                        b"precursor" => {
+                    b"MS:1000827" => match stack.iter().rev().nth(1).map(Vec::as_slice) {
+                        Some(b"precursor") => {
                             if let Ok(Some(value)) = e.try_get_attribute("value") {
-                                q1 = str::from_utf8(&value.value).unwrap().parse().unwrap();
+                                q1 = str::from_utf8(&value.value)?.parse()?;
                             }
                         }
-                        b"product" => {
+                        Some(b"product") => {
                             if let Ok(Some(value)) = e.try_get_attribute("value") {
-                                q3 = str::from_utf8(&value.value).unwrap().parse().unwrap();
+                                q3 = str::from_utf8(&value.value)?.parse()?;
                             }
                         }
                         _ => {}
@@ -90,38 +93,48 @@ pub fn mzml(mzml_f: &std::path::Path) -> (String, Vec<Q1Q3RtI>) {
                     b"MS:1000521" => pre64 = Some(false),
                     b"MS:1000574" => zlibc = Some(true),
                     b"MS:1000576" => zlibc = Some(false),
-                    b"MS:1000595" => time_arr = Some(true),
+                    b"MS:1000595" => {
+                        time_arr = Some(true);
+                        time_in_seconds = e
+                            .try_get_attribute("unitAccession")?
+                            .is_some_and(|unit| unit.value.as_ref() == b"UO:0000010");
+                    }
                     b"MS:1000515" => time_arr = Some(false),
                     _ => {}
                 }
             }
-            Ok(Event::Text(e))
-                if stack[stack.len() - 1] == b"binary" && stack[3] == b"chromatogramList" =>
+            Event::Text(e)
+                if stack.last().is_some_and(|name| name == b"binary")
+                    && stack.iter().any(|name| name == b"chromatogram") =>
             {
-                let Some(pre64) = pre64 else {
+                let Some(time_arr) = time_arr else {
                     continue;
                 };
-                let arr_l = if time_arr.expect("array type not set") {
-                    &mut rt_l
-                } else {
-                    &mut i_l
-                };
+                let pre64 = pre64.ok_or("chromatogram floating point precision not set")?;
+                let arr_l = if time_arr { &mut rt_l } else { &mut i_l };
                 decode_bin(
-                    &e.decode().unwrap(),
-                    zlibc.expect("zlib not set"),
+                    &e.decode()?,
+                    zlibc.ok_or("chromatogram compression type not set")?,
                     pre64,
                     arr_l,
                     &mut buf0,
                     &mut buf1,
-                )
-                .unwrap();
+                )?;
+                if time_arr && time_in_seconds {
+                    for time in arr_l {
+                        *time /= 60.0;
+                    }
+                }
             }
             _ => (),
         }
         buf.clear();
     }
-    q1q3eics.sort_unstable_by(|x, y| x.q1.partial_cmp(&y.q1).unwrap());
-    (ts, q1q3eics)
+    if !saw_run || !stack.is_empty() {
+        return Err("mzML is missing a complete run element".into());
+    }
+    q1q3eics.sort_unstable_by(|x, y| x.q1.total_cmp(&y.q1));
+    Ok(q1q3eics)
 }
 fn decode_bin(
     bin: &str,
@@ -146,6 +159,17 @@ fn decode_bin(
         buf0
     };
     arr_l.clear();
+    let element_size = if pre64 {
+        std::mem::size_of::<f64>()
+    } else {
+        std::mem::size_of::<f32>()
+    };
+    if buf2.len() % element_size != 0 {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            "binary array contains an incomplete floating point value",
+        ));
+    }
     if pre64 {
         arr_l.extend(
             buf2.chunks_exact(std::mem::size_of::<f64>())
